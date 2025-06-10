@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>公司案件進度查詢 (後端版)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .container { max-width: 800px; margin-top: 3rem; }
+        .card-header { background-color: #007bff; color: white; }
+        .loading-spinner { width: 1.5rem; height: 1.5rem; }
+        #resultsTable th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card shadow-sm">
+            <div class="card-header">
+                <h2>商工案件進度查詢</h2>
+            </div>
+            <div class="card-body">
+                <div class="input-group mb-3">
+                    <input type="text" class="form-control form-control-lg" id="queryInput" placeholder="輸入公司名稱或統一編號">
+                    <button class="btn btn-primary" type="button" id="searchBtn">
+                        <span id="searchBtnText">查詢</span>
+                        <div class="spinner-border loading-spinner d-none" role="status" id="loadingSpinner">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div id="resultsContainer" class="mt-4"></div>
+    </div>
+
+    <script>
+        const queryInput = document.getElementById('queryInput');
+        const searchBtn = document.getElementById('searchBtn');
+        const searchBtnText = document.getElementById('searchBtnText');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const resultsContainer = document.getElementById('resultsContainer');
+
+        async function performSearch() {
+            const query = queryInput.value.trim();
+            if (!query) {
+                alert('請輸入查詢內容');
+                return;
+            }
+
+            // 進入載入狀態
+            searchBtn.disabled = true;
+            searchBtnText.classList.add('d-none');
+            loadingSpinner.classList.remove('d-none');
+            resultsContainer.innerHTML = '<p class="text-center">查詢中，請稍候...</p>';
+
+            try {
+                // 呼叫我們的後端API
+                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                if (!response.ok) {
+                    throw new Error(`伺服器錯誤: ${response.statusText}`);
+                }
+                const results = await response.json();
+                
+                // 顯示結果
+                displayResults(results);
+
+            } catch (error) {
+                resultsContainer.innerHTML = `<div class="alert alert-danger">查詢失敗：${error.message}</div>`;
+            } finally {
+                // 恢復按鈕狀態
+                searchBtn.disabled = false;
+                searchBtnText.classList.remove('d-none');
+                loadingSpinner.classList.add('d-none');
+            }
+        }
+
+        function displayResults(data) {
+            if (data.error) {
+                resultsContainer.innerHTML = `<div class="alert alert-warning">${data.error}</div>`;
+                return;
+            }
+            if (data.cases.length === 0) {
+                resultsContainer.innerHTML = `<div class="alert alert-info">查無相關案件資料。</div>`;
+                return;
+            }
+            let tableHTML = `
+                <div class="card">
+                    <div class="card-header">查詢結果：${data.companyName || 'N/A'} (${data.companyUBN || 'N/A'})</div>
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover mb-0" id="resultsTable">
+                            <thead><tr><th>收文日期</th><th>收文號</th><th>案件名稱</th><th>辦理機關</th><th>目前狀態</th></tr></thead>
+                            <tbody>`;
+            data.cases.forEach(c => {
+                tableHTML += `<tr>
+                    <td>${c.date}</td>
+                    <td>${c.caseNumber}</td>
+                    <td>${c.caseName}</td>
+                    <td>${c.agency}</td>
+                    <td><strong>${c.status}</strong></td>
+                </tr>`;
+            });
+            tableHTML += `</tbody></table></div></div>`;
+            resultsContainer.innerHTML = tableHTML;
+        }
+
+        searchBtn.addEventListener('click', performSearch);
+        queryInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') performSearch();
+        });
+    </script>
+</body>
+</html>
