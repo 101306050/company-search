@@ -1,7 +1,7 @@
 const axios = require('axios');
-const cheerio =require('cheerio');
+const cheerio = require('cheerio');
 
-// All agency codes and names
+// 所有機關的代碼和名稱
 const agencies = {
     "00": "經濟部商業發展署", "62": "臺北市政府", "64": "高雄市政府", "65": "新北市政府",
     "66": "臺中市政府", "67": "臺南市政府", "68": "桃園市政府", "01": "基隆市政府",
@@ -13,14 +13,20 @@ const agencies = {
     "C1": "國家科學及技術委員會南部科學園區管理局", "E1": "屏東農業生物技術園區"
 };
 
-// Encapsulated logic for a single agency query
+// 封裝單次查詢的邏輯
 async function fetchSingleAgency(query, agencyCode) {
     const isUBN = /^\d{8}$/.test(query);
-    const TARGET_URL = 'https://serv.gcis.nat.gov.tw/caseSearch/list/QueryCsmmCaseList/queryCsmmCaseList.do?caseType=C';
+    
+    // --- THE FINAL, CRITICAL FIX ---
+    // The GET request to fetch the tokens MUST include the agency code.
+    // This ensures we get a token valid for that specific agency's context.
+    const TARGET_URL_WITH_AGENCY = `https://serv.gcis.nat.gov.tw/caseSearch/list/QueryCsmmCaseList/queryCsmmCaseList.do?caseType=C&agency=${agencyCode}`;
+    const POST_URL = 'https://serv.gcis.nat.gov.tw/caseSearch/list/QueryCsmmCaseList/queryCsmmCaseList.do';
+    // --- END OF FIX ---
 
     try {
-        // Step 1: GET security tokens
-        const firstResponse = await axios.get(TARGET_URL, { timeout: 10000 });
+        // Step 1: GET a token from the correctly specified agency page
+        const firstResponse = await axios.get(TARGET_URL_WITH_AGENCY, { timeout: 10000 });
         const $ = cheerio.load(firstResponse.data);
         const ownerToken = $('input[name="__owner"]').val();
         const keyToken = $('input[name="__key"]').val();
@@ -29,15 +35,10 @@ async function fetchSingleAgency(query, agencyCode) {
              throw new Error(`無法從 ${agencies[agencyCode] || agencyCode} 獲取安全權杖。`);
         }
 
-        // Step 2: POST with the query and tokens
+        // Step 2: POST with the query and the token
         const formData = new URLSearchParams();
-        
-        // --- THE CRITICAL FIX IS HERE ---
-        // The backend requires these 'K' (Keyword) fields to be present for the search to work.
         formData.append('brNameK', isUBN ? '' : query);
         formData.append('brBanNoK', isUBN ? query : '');
-        // --- END OF FIX ---
-
         formData.append('caseType', 'C');
         formData.append('ctName', 'C');
         formData.append('qryCond', isUBN ? '2' : '1');
@@ -47,7 +48,7 @@ async function fetchSingleAgency(query, agencyCode) {
         formData.append('__owner', ownerToken);
         formData.append('__key', keyToken);
 
-        const secondResponse = await axios.post(TARGET_URL, formData, {
+        const secondResponse = await axios.post(POST_URL, formData, {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             timeout: 15000,
         });
@@ -64,12 +65,15 @@ async function fetchSingleAgency(query, agencyCode) {
         $$('tr.odd, tr.even').each((i, elem) => {
             const columns = $$(elem).find('td');
             if (columns.length === 5) {
+                const fullStatusText = $$(columns[4]).text().trim();
+                const parenthesisIndex = fullStatusText.indexOf('(');
+                const finalStatus = parenthesisIndex !== -1 ? fullStatusText.substring(0, parenthesisIndex).trim() : fullStatusText;
                 cases.push({
                     date: $$(columns[0]).text().trim(),
                     caseNumber: $$(columns[1]).text().trim(),
                     caseName: $$(columns[2]).text().trim(),
                     agency: $$(columns[3]).text().trim(),
-                    status: $$(columns[4]).text().trim(),
+                    status: finalStatus,
                 });
             }
         });
@@ -87,7 +91,7 @@ async function fetchSingleAgency(query, agencyCode) {
 }
 
 
-// Vercel serverless function main entry point
+// Vercel serverless function 主入口
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -98,18 +102,16 @@ module.exports = async (req, res) => {
     if (!query) return res.status(400).json({ error: '請提供查詢關鍵字' });
     if (!agencyCode) return res.status(400).json({ error: '請選擇申登機關' });
 
-    // --- Mode 1: Scan all agencies sequentially ---
     if (agencyCode === 'all') {
         const finalResults = {};
+        // 當掃描全部時，我們仍然需要一個一個地獲取正確的權杖
         const agencyCodes = Object.keys(agencies).filter(code => code !== 'all');
-
         for (const code of agencyCodes) {
             const result = await fetchSingleAgency(query, code);
             finalResults[code] = result;
         }
         return res.status(200).json({ isScan: true, results: finalResults });
     } 
-    // --- Mode 2: Query a specific agency ---
     else {
         try {
             const result = await fetchSingleAgency(query, agencyCode);
