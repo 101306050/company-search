@@ -1,7 +1,7 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
+const cheerio =require('cheerio');
 
-// 所有機關的代碼和名稱
+// All agency codes and names
 const agencies = {
     "00": "經濟部商業發展署", "62": "臺北市政府", "64": "高雄市政府", "65": "新北市政府",
     "66": "臺中市政府", "67": "臺南市政府", "68": "桃園市政府", "01": "基隆市政府",
@@ -13,13 +13,13 @@ const agencies = {
     "C1": "國家科學及技術委員會南部科學園區管理局", "E1": "屏東農業生物技術園區"
 };
 
-// 封裝單次查詢的邏輯，方便重複呼叫
+// Encapsulated logic for a single agency query
 async function fetchSingleAgency(query, agencyCode) {
     const isUBN = /^\d{8}$/.test(query);
     const TARGET_URL = 'https://serv.gcis.nat.gov.tw/caseSearch/list/QueryCsmmCaseList/queryCsmmCaseList.do?caseType=C';
 
     try {
-        // Step 1: GET a token
+        // Step 1: GET security tokens
         const firstResponse = await axios.get(TARGET_URL, { timeout: 10000 });
         const $ = cheerio.load(firstResponse.data);
         const ownerToken = $('input[name="__owner"]').val();
@@ -29,8 +29,15 @@ async function fetchSingleAgency(query, agencyCode) {
              throw new Error(`無法從 ${agencies[agencyCode] || agencyCode} 獲取安全權杖。`);
         }
 
-        // Step 2: POST with the query and the token
+        // Step 2: POST with the query and tokens
         const formData = new URLSearchParams();
+        
+        // --- THE CRITICAL FIX IS HERE ---
+        // The backend requires these 'K' (Keyword) fields to be present for the search to work.
+        formData.append('brNameK', isUBN ? '' : query);
+        formData.append('brBanNoK', isUBN ? query : '');
+        // --- END OF FIX ---
+
         formData.append('caseType', 'C');
         formData.append('ctName', 'C');
         formData.append('qryCond', isUBN ? '2' : '1');
@@ -74,19 +81,14 @@ async function fetchSingleAgency(query, agencyCode) {
             cases: cases,
         };
     } catch (error) {
-        // 在單次查詢中捕獲錯誤，並將其作為結果的一部分返回
-        // 這樣即使某個機關查詢失敗，也不會中斷整個掃描流程
         console.error(`Error fetching for agency ${agencyCode}:`, error.message);
         return { agency: agencyCode, error: error.message, cases: [] };
     }
 }
 
 
-// Vercel serverless function 主入口
+// Vercel serverless function main entry point
 module.exports = async (req, res) => {
-    // 增加 Vercel Serverless Function 的最大執行時間
-    // Vercel Hobby plan is 10s by default. Pro can extend.
-    // This is more of a placeholder for awareness.
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     
@@ -96,25 +98,18 @@ module.exports = async (req, res) => {
     if (!query) return res.status(400).json({ error: '請提供查詢關鍵字' });
     if (!agencyCode) return res.status(400).json({ error: '請選擇申登機關' });
 
-    // --- 模式一：序列化掃描全部機關 ---
+    // --- Mode 1: Scan all agencies sequentially ---
     if (agencyCode === 'all') {
         const finalResults = {};
         const agencyCodes = Object.keys(agencies).filter(code => code !== 'all');
 
-        // 使用 for...of 迴圈來確保請求是一個接一個地發送
         for (const code of agencyCodes) {
-            try {
-                // 等待上一個查詢完成後，再開始下一個
-                const result = await fetchSingleAgency(query, code);
-                finalResults[code] = result;
-            } catch (error) {
-                // 即使發生意外錯誤，也記錄下來，然後繼續下一個
-                finalResults[code] = { agency: code, error: error.message, cases: [] };
-            }
+            const result = await fetchSingleAgency(query, code);
+            finalResults[code] = result;
         }
         return res.status(200).json({ isScan: true, results: finalResults });
     } 
-    // --- 模式二：查詢指定機關 ---
+    // --- Mode 2: Query a specific agency ---
     else {
         try {
             const result = await fetchSingleAgency(query, agencyCode);
